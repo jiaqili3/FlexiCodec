@@ -36,6 +36,7 @@ def prepare_model(sensevoice_small_path=None, device='auto', ckpt_path=None, con
         return codec_model
 
     model = build_codec_model(model_config['model'])
+    ckpt_path = str(ckpt_path)
     if ckpt_path.endswith('.safetensors'):
         import safetensors.torch
         model.load_state_dict(safetensors.torch.load_file(ckpt_path), strict=False)

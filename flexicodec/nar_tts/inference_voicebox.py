@@ -79,6 +79,7 @@ def prepare_voicebox_model(
     
     # Load checkpoint
     print(f"Loading checkpoint from: {checkpoint_path}")
+    checkpoint_path = str(checkpoint_path)
     if checkpoint_path.endswith('.safetensors'):
         import safetensors.torch
         state_dict = safetensors.torch.load_file(checkpoint_path)
