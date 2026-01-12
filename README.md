@@ -139,8 +139,7 @@ The AR+NAR TTS system generates speech tokens from text using an autoregressive 
 
 To perform complete text-to-speech with both AR generation and NAR decoding:
 
-```python
-import torch
+```pythonimport torch
 import torchaudio
 from flexicodec.ar_tts.inference_tts import tts_synthesize
 from flexicodec.ar_tts.modeling_artts import prepare_artts_model
@@ -158,11 +157,11 @@ nar_model_dict = prepare_voicebox_model(nar_checkpoint)
 output_audio, output_sr = tts_synthesize(
     ar_model_dict=ar_model_dict,
     nar_model_dict=nar_model_dict,
-    text="Hello, this is a complete text-to-speech example.",
+    text="Hello, this is a complete text to speech example.",
     language="en",
-    ref_audio_path="audio_examples/61-70968-0000_ref.wav",  # Reference voice
-    ref_text="bear us escort so far as the Sheriff's house",  # Optional reference text
-    merging_threshold=0.91,  # Frame rate control (used for both AR and NAR)
+    ref_audio_path="./audio_examples/1089-134686-0030.flac",  # Reference voice
+    ref_text="be ware of making that mistake",  # Optional reference text
+    merging_threshold=0.91,  # Frame rate control. Only two options supported: 0.91 or 0.86. If you set it to 0.91, the output is roughly 8.3Hz. The other option is about 6.25Hz.
     beam_size=1,
     top_k=25,
     temperature=1.0,
