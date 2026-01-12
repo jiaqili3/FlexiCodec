@@ -93,7 +93,7 @@ def tts_synthesize(
     cfg: float = 2.0,
     rescale_cfg: float = 0.75,
     use_nar: bool = True,
-) -> Tuple[torch.Tensor, int]:
+) -> Tuple[torch.Tensor, int, torch.Tensor]:
     """
     Perform AR TTS inference with optional NAR (Voicebox) decoding.
     
@@ -120,7 +120,7 @@ def tts_synthesize(
         use_nar: Whether to use NAR decoding (Voicebox) or AR-only (FlexiCodec direct)
     
     Returns:
-        tuple: (output_audio_tensor, sample_rate)
+        tuple: (output_audio_tensor, sample_rate, duration_classes)
     """
     from flexicodec.ar_tts.modeling_artts import infer_artts
     from flexicodec.nar_tts.inference_voicebox import infer_voicebox_tts
@@ -175,7 +175,7 @@ def tts_synthesize(
                 prompt_audio_path=ref_audio_path,
                 framerate=merging_threshold,
             )
-            return output_audio, output_sr
+            return output_audio, output_sr, duration_classes
         else:
             raise ValueError("AR model does not have FlexiCodec decoder for Voicebox integration")
     
@@ -187,7 +187,7 @@ def tts_synthesize(
                 acoustic_codes=None,
                 token_lengths=duration_classes,
             )
-            return decoded_audio.cpu().squeeze(), 16000
+            return decoded_audio.cpu().squeeze(), 16000, duration_classes
         else:
             raise ValueError("AR model does not have decode_from_codes method")
 
@@ -205,7 +205,7 @@ if __name__ == "__main__":
     nar_model_dict = prepare_voicebox_model(nar_checkpoint)
     
     # Run inference
-    audio, sr = tts_synthesize(
+    audio, sr, duration_classes = tts_synthesize(
         ar_model_dict=ar_model_dict,
         nar_model_dict=nar_model_dict,
         text="Hello, this is a test.",
@@ -217,5 +217,11 @@ if __name__ == "__main__":
     )
     
     # Save output
-    torchaudio.save("output.wav", audio.reshape(1, -1), sr)
-    print(f"Saved output to output.wav")
+    output_path = "output.wav"
+    torchaudio.save(output_path, audio.reshape(1, -1), sr)
+    
+    # Calculate and print frame rate
+    duration = audio.shape[-1] / sr
+    avg_frame_rate = duration_classes.shape[-1] / duration
+    print(f"Saved output to {output_path}")
+    print(f"This sample avg frame rate: {avg_frame_rate:.4f} frames/sec")

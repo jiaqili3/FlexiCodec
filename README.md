@@ -96,7 +96,7 @@ model_dict = prepare_voicebox_model(
 from flexicodec.infer import prepare_model as prepare_flexicodec_model, encode_flexicodec
 
 flexicodec_dict = prepare_flexicodec_model()
-gt_audio_path = "audio_examples/61-70968-0000_gt.wav"
+gt_audio_path = "audio_examples/1089-134686-0030.flac"  # Ground truth (target content)
 gt_audio, gt_sr = torchaudio.load(gt_audio_path)
 
 # Extract semantic tokens and length_ids from ground truth audio
@@ -106,7 +106,7 @@ with torch.no_grad():
     length_ids = encoded_output['token_lengths'].squeeze()     # [T] duration classes
 
 # Load prompt audio (reference voice/style)
-prompt_audio_path = "audio_examples/61-70968-0000_ref.wav"
+prompt_audio_path = "audio_examples/1089-134686-0032.flac"  # Reference audio (voice/style)
 prompt_audio, _ = torchaudio.load(prompt_audio_path)
 
 # Run VoiceBox NAR inference
@@ -139,7 +139,8 @@ The AR+NAR TTS system generates speech tokens from text using an autoregressive 
 
 To perform complete text-to-speech with both AR generation and NAR decoding:
 
-```pythonimport torch
+```python
+import torch
 import torchaudio
 from flexicodec.ar_tts.inference_tts import tts_synthesize
 from flexicodec.ar_tts.modeling_artts import prepare_artts_model
@@ -154,7 +155,7 @@ ar_model_dict = prepare_artts_model(ar_checkpoint)
 nar_model_dict = prepare_voicebox_model(nar_checkpoint)
 
 # Full TTS synthesis
-output_audio, output_sr = tts_synthesize(
+output_audio, output_sr, duration_classes = tts_synthesize(
     ar_model_dict=ar_model_dict,
     nar_model_dict=nar_model_dict,
     text="Hello, this is a complete text to speech example.",
@@ -174,14 +175,24 @@ output_audio, output_sr = tts_synthesize(
 )
 
 # Save output
-torchaudio.save("output.wav", output_audio.unsqueeze(0) if output_audio.dim() == 1 else output_audio, output_sr)
+output_path = "output.wav"
+torchaudio.save(output_path, output_audio.unsqueeze(0) if output_audio.dim() == 1 else output_audio, output_sr)
+
+# Calculate and print frame rate
+duration = output_audio.shape[-1] / output_sr
+avg_frame_rate = duration_classes.shape[-1] / duration
+print(f"Saved output to {output_path}")
+print(f"This sample avg frame rate: {avg_frame_rate:.4f} frames/sec")
 ```
 
 **Notes:**
 - `tts_synthesize` performs the full pipeline: AR generation + NAR decoding to audio
+- The function returns a tuple: `(output_audio, sample_rate, duration_classes)`
+- `duration_classes` contains the token durations which can be used to calculate the average frame rate
 - Reference audio (`ref_audio_path`) provides the voice/style characteristics
 - Reference text (`ref_text`) is optional and can help with prosody alignment
 - Set `use_nar=False` in `tts_synthesize` to use AR-only decoding (faster but lower quality)
+- `merging_threshold` controls the frame rate: 0.91 gives ~8.3Hz, 0.86 gives ~6.25Hz
 
 ### Training reference implementations
 Inside `flexicodec/ar_tts/modeling_artts.py` and `flexicodec/nar_tts/modeling_voicebox.py` there are `training_forward` methods that receive audios and prepared sensevoice-small input "FBank" features. (`dl_output` dictionary containing `x` (the [`feature_extractor`](flexicodec/infer.py#L50) output), `x_lens` (length of each x before padding), `audio` (the 16khz audio tensor)). 
