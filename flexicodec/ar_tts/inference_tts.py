@@ -157,31 +157,23 @@ def tts_synthesize(
         # Use NAR (Voicebox) for decoding
         # Decode with FlexiCodec to get audio for Voicebox
         if hasattr(ar_model, 'flexicodec_model') and hasattr(ar_model.flexicodec_model, 'decode_from_codes'):
-            # Decode to get prompt audio for Voicebox
-            prompt_audio = ar_model.flexicodec_model.decode_from_codes(
-                semantic_codes=prompt_speech_token.unsqueeze(1),
-                acoustic_codes=None,
-                token_lengths=prompt_token_lengths,
-            )
             
-            # Decode generated tokens to get GT audio
-            gt_audio = ar_model.flexicodec_model.decode_from_codes(
-                semantic_codes=speech_tokens.unsqueeze(1),
-                acoustic_codes=None,
-                token_lengths=duration_classes,
-            )
             
-            # Use Voicebox inference
+            # Use Voicebox inference with new signature
+            # Update nar_model_dict with inference parameters if not already set
+            if 'n_timesteps' not in nar_model_dict:
+                nar_model_dict['n_timesteps'] = n_timesteps
+            if 'cfg' not in nar_model_dict:
+                nar_model_dict['cfg'] = cfg
+            if 'rescale_cfg' not in nar_model_dict:
+                nar_model_dict['rescale_cfg'] = rescale_cfg
+            
             output_audio, output_sr = infer_voicebox_tts(
                 model_dict=nar_model_dict,
-                gt_audio=gt_audio.squeeze(1),
-                ref_audio=prompt_audio.squeeze(1),
-                gt_sample_rate=16000,
-                ref_sample_rate=16000,
-                n_timesteps=n_timesteps,
-                cfg=cfg,
-                rescale_cfg=rescale_cfg,
-                merging_threshold=merging_threshold,
+                audio_tokens=speech_tokens,
+                length_ids=duration_classes,
+                prompt_audio_path=ref_audio_path,
+                framerate=merging_threshold,
             )
             return output_audio, output_sr
         else:

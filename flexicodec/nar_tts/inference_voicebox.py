@@ -29,6 +29,9 @@ def prepare_voicebox_model(
     checkpoint_path: str,
     voicebox_config: Optional[Dict] = None,
     device: Optional[str] = None,
+    n_timesteps: int = 15,
+    cfg: float = 2.0,
+    rescale_cfg: float = 0.75,
 ):
     """
     Prepare and load the VoiceboxWrapper model and vocoder for inference.
@@ -37,9 +40,12 @@ def prepare_voicebox_model(
         checkpoint_path: Path to the model checkpoint (.pt or .safetensors)
         voicebox_config: Optional VoiceBox model configuration dict. If None, uses default config.
         device: Device to use ('cuda', 'mps', 'cpu', or None for auto-detection)
+        n_timesteps: Number of diffusion timesteps (default: 15)
+        cfg: Classifier-free guidance scale (default: 2.0)
+        rescale_cfg: Rescaling factor for CFG (default: 0.75)
     
     Returns:
-        dict: Dictionary containing 'model' and 'vocoder_decode_func' keys
+        dict: Dictionary containing 'model', 'vocoder_decode_func', and inference parameters
     """
     global _model_cache, _vocoder_cache
     
@@ -91,40 +97,31 @@ def prepare_voicebox_model(
     return {
         'model': model,
         'vocoder_decode_func': vocoder_decode_func,
-        'device': device
+        'device': device,
+        'n_timesteps': n_timesteps,
+        'cfg': cfg,
+        'rescale_cfg': rescale_cfg,
     }
 
 
 def infer_voicebox_tts(
     model_dict: Dict,
-    gt_audio_path: Optional[str] = None,
-    ref_audio_path: Optional[str] = None,
-    gt_audio: Optional[torch.Tensor] = None,
-    ref_audio: Optional[torch.Tensor] = None,
-    gt_sample_rate: Optional[int] = None,
-    ref_sample_rate: Optional[int] = None,
-    n_timesteps: int = 15,
-    cfg: float = 2.0,
-    rescale_cfg: float = 0.75,
-    merging_threshold: float = 1.0,
+    audio_tokens: torch.Tensor,
+    length_ids: Optional[torch.Tensor] = None,
+    prompt_audio: Optional[torch.Tensor] = None,
+    prompt_audio_path: Optional[str] = None,
+    framerate: Optional[float] = None,
 ) -> tuple:
     """
     Perform Voicebox-based NAR TTS inference.
     
     Args:
         model_dict: Dictionary returned from prepare_voicebox_model()
-        gt_audio_path: Path to ground truth audio file (alternative to gt_audio)
-        ref_audio_path: Path to reference audio file (alternative to ref_audio)
-        gt_audio: Ground truth audio tensor [1, T] (alternative to gt_audio_path)
-        ref_audio: Reference audio tensor [1, T] (alternative to ref_audio_path)
-        gt_sample_rate: Sample rate of gt_audio if provided as tensor
-        ref_sample_rate: Sample rate of ref_audio if provided as tensor
-        n_timesteps: Number of diffusion timesteps (default: 15)
-        cfg: Classifier-free guidance scale (default: 2.0)
-        rescale_cfg: Rescaling factor for CFG (default: 0.75)
-        merging_threshold: Merging threshold for FlexiCodec frame rate control (default: 1.0, max: 1.0)
-            - Lower values (e.g., 0.87, 0.91) enable dynamic frame rate merging
-            - Value of 1.0 disables merging (standard 12.5Hz codec)
+        audio_tokens: [T] audio token indices (semantic codes)
+        length_ids: [T] length class indices (token durations)
+        prompt_audio: Optional prompt audio tensor [1, T_audio]. If None, uses placeholder.
+        prompt_audio_path: Optional path to prompt audio file for caching features
+        framerate: Optional frame rate. If None, uses default framerate (1.0).
     
     Returns:
         tuple: (output_audio_tensor, sample_rate)
@@ -135,52 +132,112 @@ def infer_voicebox_tts(
     vocoder_decode_func = model_dict['vocoder_decode_func']
     device = model_dict['device']
     
-    # Load or prepare ground truth audio
-    if gt_audio_path is not None:
-        gt_audio, gt_sr = torchaudio.load(gt_audio_path)
-    elif gt_audio is not None:
-        gt_audio = gt_audio.clone()
-        gt_sr = gt_sample_rate if gt_sample_rate is not None else 16000
+    # Set default framerate if not provided
+    if framerate is None:
+        framerate = 1.0
+        print(f"Framerate not given. Using default framerate: {framerate}.")
+    
+    # Prepare audio tokens
+    semantic_codes = audio_tokens
+    if semantic_codes.dim() == 1:
+        semantic_codes = semantic_codes.unsqueeze(0)  # [1, T]
+    semantic_codes = semantic_codes.to(device)
+    
+    # Convert length_ids to token_lengths if provided
+    if length_ids is not None:
+        token_lengths = length_ids
+        if token_lengths.dim() == 1:
+            token_lengths = token_lengths.unsqueeze(0)  # [1, T]
+        token_lengths = token_lengths.to(device)
     else:
-        raise ValueError("Either gt_audio_path or gt_audio must be provided")
+        token_lengths = torch.ones(1, semantic_codes.size(1), dtype=torch.long, device=device)
     
-    # Load or prepare reference audio
-    if ref_audio_path is not None:
-        ref_audio, ref_sr = torchaudio.load(ref_audio_path)
-    elif ref_audio is not None:
-        ref_audio = ref_audio.clone()
-        ref_sr = ref_sample_rate if ref_sample_rate is not None else 16000
+    # Expand generated tokens using duration classes (token_lengths)
+    expanded_gen_tokens = semantic_codes
+    if length_ids is not None:
+        expanded_gen_tokens = torch.repeat_interleave(semantic_codes[0], token_lengths[0]).unsqueeze(0)
+    
+    # Load prompt audio from path if provided
+    if prompt_audio_path is not None:
+        prompt_audio, prompt_sr = torchaudio.load(prompt_audio_path)
+        if prompt_sr != 16000:
+            prompt_audio = torchaudio.transforms.Resample(prompt_sr, 16000)(prompt_audio)
     else:
-        raise ValueError("Either ref_audio_path or ref_audio must be provided")
+        assert prompt_audio is not None, "prompt_audio must be provided"
+    # Ensure prompt audio is mono and properly shaped
+    if prompt_audio.dim() == 1:
+        prompt_audio = prompt_audio.unsqueeze(0)
+    if prompt_audio.shape[0] > 1:
+        prompt_audio = prompt_audio.mean(dim=0, keepdim=True)
+    prompt_audio = prompt_audio.to(device)
     
-    # Process ground truth audio
-    if gt_sr != 16000:
-        gt_audio = torchaudio.transforms.Resample(gt_sr, 16000)(gt_audio)
-    if gt_audio.shape[0] > 1:
-        gt_audio = gt_audio.mean(dim=0, keepdim=True)
-    gt_audio = gt_audio.to(device)
+    # Extract features for prompt audio
+    prompt_mel_features, _ = feature_extractor_for_dualcodec.extract_fbank(prompt_audio.cpu())
+    prompt_mel_features = prompt_mel_features.to(device)
+    prompt_x_lens = torch.tensor([prompt_mel_features.shape[1]], dtype=torch.long, device=device)
     
-    # Process reference audio
-    if ref_sr != 16000:
-        ref_audio = torchaudio.transforms.Resample(ref_sr, 16000)(ref_audio)
-    if ref_audio.shape[0] > 1:
-        ref_audio = ref_audio.mean(dim=0, keepdim=True)
-    ref_audio = ref_audio.to(device)
+    # Set merging threshold on model
+    model.dualcodec_model.similarity_threshold = framerate
     
-    # Call the inference function
-    return infer_voicebox_librispeech(
-        model=model,
-        vocoder_decode_func=vocoder_decode_func,
-        gt_audio_path=None,  # Not used, audio already loaded
-        ref_audio_path=None,  # Not used, audio already loaded
-        gt_audio=gt_audio,
-        ref_audio=ref_audio,
-        device=device,
-        n_timesteps=n_timesteps,
-        cfg=cfg,
-        rescale_cfg=rescale_cfg,
-        merging_threshold=merging_threshold,
+    # Extract semantic codes from prompt
+    prompt_output = model._extract_dualcodec_features(
+        prompt_audio, mel=prompt_mel_features, x_lens=prompt_x_lens, manual_threshold=framerate
     )
+    prompt_cond_codes = prompt_output['semantic_codes_aggregated'].squeeze(1)  # [1, T_prompt]
+    prompt_token_lengths = prompt_output.get('token_lengths')
+    
+    # Expand prompt tokens if token_lengths are available
+    expanded_prompt_tokens = prompt_cond_codes
+    if prompt_token_lengths is not None and prompt_cond_codes.shape[1] > 0:
+        expanded_prompt_tokens = torch.repeat_interleave(prompt_cond_codes[0], prompt_token_lengths[0]).unsqueeze(0)
+    
+    # Extract prompt mel features
+    prompt_mel = model._extract_mel_features(prompt_audio)
+    
+    # Concatenate expanded prompt and expanded generated codes
+    cond_codes = torch.cat([expanded_prompt_tokens, expanded_gen_tokens], dim=1)
+    
+    # Get conditioning features
+    voicebox_model = model.voicebox_model
+    cond_feature = voicebox_model.cond_emb(cond_codes)
+    cond_feature = F.interpolate(
+        cond_feature.transpose(1, 2),
+        scale_factor=voicebox_model.cond_scale_factor,
+    ).transpose(1, 2)
+    
+    # Run reverse diffusion
+    device_type = 'cuda' if device.startswith('cuda') else 'cpu'
+    with torch.autocast(device_type=device_type, dtype=torch.float32, enabled=(device_type == 'cuda')):
+        predicted_mel = voicebox_model.reverse_diffusion(
+            cond=cond_feature,
+            prompt=prompt_mel,
+            n_timesteps=model_dict.get('n_timesteps', 15),
+            cfg=model_dict.get('cfg', 2.0),
+            rescale_cfg=model_dict.get('rescale_cfg', 0.75),
+        )
+    
+    # Vocode mel to wav
+    use_decoder_latent = model.use_decoder_latent
+    use_decoder_latent_before_agg = model.use_decoder_latent_before_agg
+    decoder_latent_pass_transformer = model.decoder_latent_pass_transformer
+    
+    if use_decoder_latent:
+        predicted_audio = model.dualcodec_model.decode_from_latent(predicted_mel.transpose(1, 2), token_lengths)
+        return predicted_audio.cpu().squeeze(), 16000
+    elif use_decoder_latent_before_agg:
+        if decoder_latent_pass_transformer:
+            predicted_audio = model.dualcodec_model.dac.decoder(torch.cat([prompt_mel, predicted_mel], dim=1).transpose(1, 2))
+            predicted_audio = predicted_audio[..., prompt_audio.shape[-1]:]
+            return predicted_audio.cpu().squeeze(0), 16000
+        else:
+            predicted_audio = model.dualcodec_model.dac.decoder(
+                model.dualcodec_model.bottleneck_transformer(torch.cat([prompt_mel, predicted_mel], dim=1).transpose(1, 2))
+            )
+            predicted_audio = predicted_audio[..., prompt_audio.shape[-1]:]
+            return predicted_audio.cpu().squeeze(0), 16000
+    else:
+        predicted_audio = vocoder_decode_func(predicted_mel.transpose(1, 2))
+        return predicted_audio.cpu().squeeze(), 24000
 
 
 def load_vocoder(device='cuda'):
@@ -330,23 +387,34 @@ def infer_voicebox_librispeech(
 if __name__ == "__main__":
     # Test/example usage
     checkpoint_path = '/Users/jiaqi/github/FlexiCodec/nartts.safetensors'
-    gt_audio_path = '/Users/jiaqi/github/FlexiCodec/audio_examples/61-70968-0000_gt.wav'
-    ref_audio_path = '/Users/jiaqi/github/FlexiCodec/audio_examples/61-70968-0000_ref.wav'
+    prompt_audio_path = '/Users/jiaqi/github/FlexiCodec/audio_examples/61-70968-0000_ref.wav'
     output_path = '/Users/jiaqi/github/FlexiCodec/61-70968-0000_output.wav'
     
     # Prepare model (loads model and vocoder)
     print("Loading model...")
-    model_dict = prepare_voicebox_model(checkpoint_path)
+    model_dict = prepare_voicebox_model(
+        checkpoint_path,
+        n_timesteps=15,
+        cfg=2.0,
+        rescale_cfg=0.75
+    )
+    
+    # Load prompt audio
+    prompt_audio, _ = torchaudio.load(prompt_audio_path)
+    
+    # Example: Create dummy audio tokens and length_ids for testing
+    # In real usage, these would come from an AR model or codec encoder
+    audio_tokens = torch.randint(0, 32768, (100,))  # Example semantic tokens
+    length_ids = torch.ones(100, dtype=torch.long)  # Example duration classes
     
     # Run inference
     print("Running inference...")
     output_audio, output_sr = infer_voicebox_tts(
         model_dict=model_dict,
-        gt_audio_path=gt_audio_path,
-        ref_audio_path=ref_audio_path,
-        n_timesteps=15,
-        cfg=2.0,
-        rescale_cfg=0.75
+        audio_tokens=audio_tokens,
+        length_ids=length_ids,
+        prompt_audio=prompt_audio,
+        framerate=1.0
     )
     
     # Save output
