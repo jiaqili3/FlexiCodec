@@ -101,7 +101,7 @@ gt_audio, gt_sr = torchaudio.load(gt_audio_path)
 
 # Extract semantic tokens and length_ids from ground truth audio
 with torch.no_grad():
-    encoded_output = encode_flexicodec(gt_audio, flexicodec_dict, gt_sr, merging_threshold=1.0)
+    encoded_output = encode_flexicodec(gt_audio, flexicodec_dict, gt_sr, merging_threshold=0.9) # You can use any merging threshold value here. 
     audio_tokens = encoded_output['semantic_codes'].squeeze()  # [T] semantic token indices
     length_ids = encoded_output['token_lengths'].squeeze()     # [T] duration classes
 
@@ -121,7 +121,14 @@ output_audio, output_sr = infer_voicebox_tts(
 )
 
 # Save output
-torchaudio.save("output.wav", output_audio.unsqueeze(0) if output_audio.dim() == 1 else output_audio, output_sr)
+output_path = "output_nar.wav"
+torchaudio.save(output_path, output_audio.unsqueeze(0) if output_audio.dim() == 1 else output_audio, output_sr)
+
+# Calculate and print frame rate
+duration = output_audio.shape[-1] / output_sr
+avg_frame_rate = length_ids.shape[-1] / duration
+print(f"Saved output to {output_path}")
+print(f"This sample avg frame rate: {avg_frame_rate:.4f} frames/sec")
 ```
 
 **Notes:**
