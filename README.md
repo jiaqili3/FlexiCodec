@@ -1,7 +1,8 @@
 # FlexiCodec: A Dynamic Neural Audio Codec for Low Frame Rates
 
-[![Demo Page](https://img.shields.io/badge/GitHub.io-Demo_Page-blue?logo=Github&style=flat-square)](https://flexicodec.github.io/)
 [![ArXiv](https://img.shields.io/badge/arXiv-PDF-green?logo=arxiv&style=flat-square)](https://arxiv.org/abs/2510.00981)
+[![Demo Page](https://img.shields.io/badge/GitHub.io-Demo_Page-blue?logo=Github&style=flat-square)](https://flexicodec.github.io/)
+[![OpenReview](https://img.shields.io/badge/OpenReview-ICLR26-green?logo=OpenReview&style=flat-square)](https://openreview.net/forum?id=kYkfCs4ZAH)
 
 
 ## Abstract
