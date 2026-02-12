@@ -18,8 +18,6 @@ pip install -r requirements.txt
 <!-- # pip install -e . -->
 
 ## FlexiCodec
-Code is available under [`flexicodec/modeling_flexicodec.py`](flexicodec/modeling_flexicodec.py). 
-
 To run inference (automatically downloads checkpoint from huggingface):
 ```python
 import torch
@@ -63,6 +61,8 @@ To resolve this, you can additionally pass an `audio_lens` parameter to `encode_
   ```python
   feat = model_dict['model'].get_semantic_feature(encoded_output['semantic_codes'])
   ```
+
+- Model source code is available at [`flexicodec/modeling_flexicodec.py`](flexicodec/modeling_flexicodec.py). 
 
 ## FlexiCodec-TTS
 First, install additional dependencies:
