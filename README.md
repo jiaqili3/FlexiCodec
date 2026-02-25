@@ -1,7 +1,8 @@
 # FlexiCodec: A Dynamic Neural Audio Codec for Low Frame Rates
 
-[![Demo Page](https://img.shields.io/badge/GitHub.io-Demo_Page-blue?logo=Github&style=flat-square)](https://flexicodec.github.io/)
 [![ArXiv](https://img.shields.io/badge/arXiv-PDF-green?logo=arxiv&style=flat-square)](https://arxiv.org/abs/2510.00981)
+[![Demo Page](https://img.shields.io/badge/GitHub.io-Demo_Page-blue?logo=Github&style=flat-square)](https://flexicodec.github.io/)
+[![OpenReview](https://img.shields.io/badge/OpenReview-ICLR2026-red?logo=OpenReview&style=flat-square)](https://openreview.net/forum?id=kYkfCs4ZAH)
 
 
 ## Abstract
@@ -17,8 +18,6 @@ pip install -r requirements.txt
 <!-- # pip install -e . -->
 
 ## FlexiCodec
-Code is available under [`flexicodec/modeling_flexicodec.py`](flexicodec/modeling_flexicodec.py). 
-
 To run inference (automatically downloads checkpoint from huggingface):
 ```python
 import torch
@@ -63,6 +62,8 @@ To resolve this, you can additionally pass an `audio_lens` parameter to `encode_
   feat = model_dict['model'].get_semantic_feature(encoded_output['semantic_codes'])
   ```
 
+- Model source code is available at [`flexicodec/modeling_flexicodec.py`](flexicodec/modeling_flexicodec.py). 
+
 ## FlexiCodec-TTS
 First, install additional dependencies:
 ```bash
@@ -82,51 +83,64 @@ from flexicodec.nar_tts.inference_voicebox import (
     infer_voicebox_tts
 )
 from cached_path import cached_path
-# Prepare model (loads model and vocoder)
+
+# Prepare VoiceBox model (loads model and vocoder)
 checkpoint_path = cached_path('hf://jiaqili3/flexicodec/nartts.safetensors')
-model_dict = prepare_voicebox_model(checkpoint_path)
-
-# Option 1: Inference with audio file paths
-gt_audio_path = "audio_examples/61-70968-0000_gt.wav"  # Target content. Example GT audio
-ref_audio_path = "audio_examples/61-70968-0000_ref.wav"     # Reference voice/style. 
-
-output_audio, output_sr = infer_voicebox_tts(
-    model_dict=model_dict,
-    gt_audio_path=gt_audio_path,
-    ref_audio_path=ref_audio_path,
+model_dict = prepare_voicebox_model(
+    checkpoint_path,
     n_timesteps=15,          # Number of diffusion steps (default: 15)
     cfg=2.0,                 # Classifier-free guidance scale (default: 2.0)
     rescale_cfg=0.75,        # CFG rescaling factor (default: 0.75)
-    merging_threshold=1.0    # Merging threshold for frame rate control (default: 1.0, max: 1.0)
+)
+
+# Load ground truth audio (target content) and extract semantic tokens via FlexiCodec
+from flexicodec.infer import prepare_model as prepare_flexicodec_model, encode_flexicodec
+
+flexicodec_dict = prepare_flexicodec_model()
+gt_audio_path = "audio_examples/1089-134686-0030.flac"  # Ground truth (target content)
+gt_audio, gt_sr = torchaudio.load(gt_audio_path)
+
+# Extract semantic tokens and length_ids from ground truth audio
+with torch.no_grad():
+    encoded_output = encode_flexicodec(gt_audio, flexicodec_dict, gt_sr, merging_threshold=0.9) # You can use any merging threshold value here. 
+    audio_tokens = encoded_output['semantic_codes'].squeeze()  # [T] semantic token indices
+    length_ids = encoded_output['token_lengths'].squeeze()     # [T] duration classes
+
+# Load prompt audio (reference voice/style)
+prompt_audio_path = "audio_examples/1089-134686-0032.flac"  # Reference audio (voice/style)
+prompt_audio, _ = torchaudio.load(prompt_audio_path)
+
+# Run VoiceBox NAR inference
+output_audio, output_sr = infer_voicebox_tts(
+    model_dict=model_dict,
+    audio_tokens=audio_tokens,     # [T] semantic token indices from FlexiCodec
+    length_ids=length_ids,         # [T] duration classes from FlexiCodec
+    prompt_audio=prompt_audio,     # [1, T_audio] prompt audio tensor
+    prompt_audio_path=prompt_audio_path,  # Optional: for feature caching
+    framerate=1.0                  # Frame rate control (default: 1.0, max: 1.0)
+                                   # Lower values (e.g., 0.87, 0.91) enable dynamic merging
 )
 
 # Save output
-torchaudio.save("output.wav", output_audio.unsqueeze(0) if output_audio.dim() == 1 else output_audio, output_sr)
+output_path = "output_nar.wav"
+torchaudio.save(output_path, output_audio.unsqueeze(0) if output_audio.dim() == 1 else output_audio, output_sr)
 
-# Option 2: Inference with audio tensors
-gt_audio, gt_sr = torchaudio.load("path/to/ground_truth.wav")
-ref_audio, ref_sr = torchaudio.load("path/to/reference.wav")
-
-output_audio, output_sr = infer_voicebox_tts(
-    model_dict=model_dict,
-    gt_audio=gt_audio,
-    ref_audio=ref_audio,
-    gt_sample_rate=gt_sr,
-    ref_sample_rate=ref_sr,
-    n_timesteps=15,
-    cfg=2.0,
-    rescale_cfg=0.75,
-    merging_threshold=1.0
-)
+# Calculate and print frame rate
+duration = output_audio.shape[-1] / output_sr
+avg_frame_rate = length_ids.shape[-1] / duration
+print(f"Saved output to {output_path}")
+print(f"This sample avg frame rate: {avg_frame_rate:.4f} frames/sec")
 ```
 
 **Notes:**
 - The model automatically detects and uses CUDA, MPS (Apple Silicon), or CPU devices
-- Ground truth audio (`gt_audio`) determines the semantic content of the output
-- Reference audio (`ref_audio`) determines the voice/style characteristics
+- `audio_tokens` are semantic token indices extracted from ground truth audio via FlexiCodec encoding (as shown above) or generated by an AR model
+- `length_ids` are duration classes for each token extracted from FlexiCodec encoding (optional, defaults to 1 for each token)
+- `prompt_audio` determines the voice/style characteristics of the output
+- The ground truth audio determines the semantic content of the output through its extracted tokens
 - Output sample rate is typically 16000 Hz or 24000 Hz depending on the model configuration
 - You can reuse `model_dict` for multiple inference calls to avoid reloading the model
-- `merging_threshold` controls FlexiCodec's dynamic frame rate: lower values (e.g., 0.87, 0.91) enable merging for lower average frame rates, while 1.0 disables merging (standard 12.5Hz)
+- `framerate` controls FlexiCodec's dynamic frame rate: lower values (e.g., 0.87, 0.91) enable merging for lower average frame rates, while 1.0 disables merging (standard 12.5Hz)
 
 ### FlexiCodec-based AR+NAR TTS Inference
 The AR+NAR TTS system generates speech tokens from text using an autoregressive transformer model, and then uses the Voicebox NAR system to decode the tokens into audio.
@@ -149,14 +163,14 @@ ar_model_dict = prepare_artts_model(ar_checkpoint)
 nar_model_dict = prepare_voicebox_model(nar_checkpoint)
 
 # Full TTS synthesis
-output_audio, output_sr = tts_synthesize(
+output_audio, output_sr, duration_classes = tts_synthesize(
     ar_model_dict=ar_model_dict,
     nar_model_dict=nar_model_dict,
-    text="Hello, this is a complete text-to-speech example.",
+    text="Hello, this is a complete text to speech example.",
     language="en",
-    ref_audio_path="audio_examples/61-70968-0000_ref.wav",  # Reference voice
-    ref_text="bear us escort so far as the Sheriff's house",  # Optional reference text
-    merging_threshold=0.91,  # Frame rate control (used for both AR and NAR)
+    ref_audio_path="./audio_examples/1089-134686-0030.flac",  # Reference voice
+    ref_text="be ware of making that mistake",  # Optional reference text
+    merging_threshold=0.91,  # Frame rate control. Only two options supported: 0.91 or 0.86. If you set it to 0.91, the output is roughly 8Hz. The other option is about 6Hz.
     beam_size=1,
     top_k=25,
     temperature=1.0,
@@ -169,14 +183,24 @@ output_audio, output_sr = tts_synthesize(
 )
 
 # Save output
-torchaudio.save("output.wav", output_audio.unsqueeze(0) if output_audio.dim() == 1 else output_audio, output_sr)
+output_path = "output.wav"
+torchaudio.save(output_path, output_audio.unsqueeze(0) if output_audio.dim() == 1 else output_audio, output_sr)
+
+# Calculate and print frame rate
+duration = output_audio.shape[-1] / output_sr
+avg_frame_rate = duration_classes.shape[-1] / duration
+print(f"Saved output to {output_path}")
+print(f"This sample avg frame rate: {avg_frame_rate:.4f} frames/sec")
 ```
 
 **Notes:**
 - `tts_synthesize` performs the full pipeline: AR generation + NAR decoding to audio
+- The function returns a tuple: `(output_audio, sample_rate, duration_classes)`
+- `duration_classes` contains the token durations which can be used to calculate the average frame rate
 - Reference audio (`ref_audio_path`) provides the voice/style characteristics
 - Reference text (`ref_text`) is optional and can help with prosody alignment
 - Set `use_nar=False` in `tts_synthesize` to use AR-only decoding (faster but lower quality)
+- `merging_threshold` controls the frame rate: 0.91 gives ~8.3Hz, 0.86 gives ~6.25Hz
 
 ### Training reference implementations
 Inside `flexicodec/ar_tts/modeling_artts.py` and `flexicodec/nar_tts/modeling_voicebox.py` there are `training_forward` methods that receive audios and prepared sensevoice-small input "FBank" features. (`dl_output` dictionary containing `x` (the [`feature_extractor`](flexicodec/infer.py#L50) output), `x_lens` (length of each x before padding), `audio` (the 16khz audio tensor)). 
