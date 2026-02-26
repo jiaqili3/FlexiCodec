@@ -217,6 +217,11 @@ class FlexiCodec(nn.Module):
             
             from pathlib import Path
             sensevoice_model_code_dir = f'{str(Path(__file__).parent)}/customized_sensevoice/model.py'
+            try:
+                import flexicodec.customized_sensevoice.model as model
+            except:
+                pass
+
             # Initialize FunASR model directly
             funasr_model = AutoModel(
                 model=semantic_model_path,
