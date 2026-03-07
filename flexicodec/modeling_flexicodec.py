@@ -618,12 +618,16 @@ class FlexiCodec(nn.Module):
 
         # Ensure time dimensions match
         if acoustic_features.shape[-1] != semantic_repr.shape[-1]:
-            # assert the shape difference is at most 2
-            
-            min_len = min(acoustic_features.shape[-1], semantic_repr.shape[-1])
-            acoustic_features = acoustic_features[..., :min_len]
-            semantic_repr = semantic_repr[..., :min_len]
-            semantic_repr_ret = semantic_repr_ret[..., :min_len]
+            max_len = max(acoustic_features.shape[-1], semantic_repr.shape[-1])
+            if acoustic_features.shape[-1] < max_len:
+                pad_amount = max_len - acoustic_features.shape[-1]
+                acoustic_features = F.pad(acoustic_features, (0, pad_amount), mode="replicate")
+            if semantic_repr.shape[-1] < max_len:
+                pad_amount = max_len - semantic_repr.shape[-1]
+                semantic_repr = F.pad(semantic_repr, (0, pad_amount), mode="replicate")
+            if semantic_repr_ret.shape[-1] < max_len:
+                pad_amount = max_len - semantic_repr_ret.shape[-1]
+                semantic_repr_ret = F.pad(semantic_repr_ret, (0, pad_amount), mode="replicate")
         if self.use_similarity_alignment:
             # Vectorized alignment computation for the whole batch, based on semantic_repr
             h_frames_batch = semantic_repr.transpose(1, 2)  # (B, T, D)
